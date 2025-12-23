@@ -145,6 +145,71 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     }
   }
 
+  Future<void> _rewriteText() async {
+    if (!_isModelReady) {
+      _showError('Model is not ready yet');
+      return;
+    }
+
+    final inputText = _inputController.text.trim();
+    if (inputText.isEmpty) {
+      _showError('Please enter some text');
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _outputController.text = 'Rewriting...';
+    });
+
+    try {
+      final request = OpenAiRequest(
+        maxTokens: 512,
+        messages: [
+          Message(
+            Role.system,
+            'You are a professional writing assistant. Your task is to completely rewrite and improve the text provided by the user. Make it clearer, more engaging, and professionally written while preserving the original meaning. Return ONLY the rewritten text without any explanations.',
+          ),
+          Message(
+            Role.user,
+            'Rewrite the following text: $inputText',
+          ),
+        ],
+        modelPath: _modelPath!,
+        temperature: 0.7,
+        topP: 0.9,
+      );
+
+      await fllamaChat(request, (response, responseJson, done) {
+        String cleanResponse = response
+            .replaceAll(RegExp(r'<\|eot_id\|>'), '')
+            .replaceAll(RegExp(r'<\|start_header_id\|>'), '')
+            .replaceAll(RegExp(r'<\|end_header_id\|>'), '')
+            .replaceAll(RegExp(r'\b(system|user|assistant)\b'), '')
+            .trim();
+
+        if (done) {
+          print('✅ Rewrite completed');
+          print('Final result: $cleanResponse');
+          setState(() {
+            _outputController.text = cleanResponse;
+            _isProcessing = false;
+          });
+        } else {
+          print('Streaming: $cleanResponse');
+          setState(() {
+            _outputController.text = cleanResponse;
+          });
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _outputController.text = 'Error: $e';
+        _isProcessing = false;
+      });
+    }
+  }
+
   Future<void> _fixGrammar() async {
     if (!_isModelReady) {
       _showError('Model is not ready yet');
@@ -275,16 +340,37 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Fix Grammar Button
-              ElevatedButton(
-                onPressed: _isModelReady && !_isProcessing ? _fixGrammar : null,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                ),
-                child: Text(
-                  _isProcessing ? 'Processing...' : 'Fix Grammar',
-                  style: const TextStyle(fontSize: 16),
-                ),
+              // Action Buttons Row
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _isModelReady && !_isProcessing ? _fixGrammar : null,
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.all(16),
+                      ),
+                      child: Text(
+                        _isProcessing ? 'Processing...' : 'Fix Grammar',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _isModelReady && !_isProcessing ? _rewriteText : null,
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.all(16),
+                        backgroundColor: Colors.deepPurple,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: Text(
+                        _isProcessing ? 'Processing...' : 'Rewrite',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
 
