@@ -1,8 +1,12 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:fllama/fllama.dart';
+import 'package:dio/dio.dart';
+
+// Platform-specific imports
+import 'platform_helper_stub.dart'
+    if (dart.library.io) 'platform_helper_io.dart'
+    if (dart.library.html) 'platform_helper_web.dart';
 
 void main() {
   runApp(const MyApp());
@@ -38,19 +42,83 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
   bool _isDownloading = false;
   bool _isModelReady = false;
   bool _isProcessing = false;
+  bool _isModelLoading = false;  // Track model loading state
   double _downloadProgress = 0.0;
+  double _loadingProgress = 0.0;  // Track loading progress (0.0 to 1.0)
   String _statusMessage = 'Model not downloaded';
 
   String? _modelPath;
 
+  // Mobile: Download GGUF model
   static const String modelUrl =
     'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf';
   static const String modelFilename = 'llama-3.2-1b-q4.gguf';
 
+  // Web: MLC model ID (model downloads automatically via MLC)
+  static const String webModelId = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
+
   @override
   void initState() {
     super.initState();
-    _checkModelExists();
+    if (kIsWeb) {
+      _initializeWebModel();
+    } else {
+      _checkModelExists();
+    }
+  }
+
+  void _initializeWebModel() {
+    setState(() {
+      _modelPath = webModelId;
+      _isModelReady = true;
+      _statusMessage = 'Ready! Model will download on first use (WebGPU)';
+    });
+  }
+
+  // Web: Use MLC WebGPU inference (fast: 40-70 tokens/sec)
+  // Mobile: Use regular fllamaChat (GGUF files)
+  Future<void> _runInference({
+    required OpenAiRequest request,
+    required void Function(String response, bool done) onResponse,
+  }) async {
+    if (kIsWeb) {
+      // Use MLC WebGPU for fast web inference
+      await fllamaChatMlcWeb(
+        request,
+        (downloadProgress, loadingProgress) {
+          // Model loading progress callback
+          setState(() {
+            _isModelLoading = true;
+            _downloadProgress = downloadProgress;
+            _loadingProgress = loadingProgress;
+            if (downloadProgress < 1.0) {
+              _statusMessage = 'Downloading model: ${(downloadProgress * 100).toInt()}%';
+            } else if (loadingProgress < 1.0) {
+              _statusMessage = 'Loading model into GPU: ${(loadingProgress * 100).toInt()}%';
+            } else {
+              _isModelLoading = false;
+              _statusMessage = 'Model ready! (WebGPU accelerated)';
+            }
+          });
+        },
+        (response, responseJson, done) {
+          // Inference response callback
+          onResponse(response, done);
+        },
+      );
+    } else {
+      // Use regular GGUF inference on mobile
+      await fllamaChat(request, (response, responseJson, done) {
+        // Clean Llama 3.2 chat template tokens from response
+        String cleanResponse = response
+            .replaceAll(RegExp(r'<\|eot_id\|>'), '')
+            .replaceAll(RegExp(r'<\|start_header_id\|>'), '')
+            .replaceAll(RegExp(r'<\|end_header_id\|>'), '')
+            .replaceAll(RegExp(r'\b(system|user|assistant)\b'), '')
+            .trim();
+        onResponse(cleanResponse, done);
+      });
+    }
   }
 
   @override
@@ -60,20 +128,20 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     super.dispose();
   }
 
+  // Get model path (uses platform-specific helper)
   Future<String> _getModelPath() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final modelDir = Directory('${appDir.path}/models');
-    if (!await modelDir.exists()) {
-      await modelDir.create(recursive: true);
-    }
-    return '${modelDir.path}/$modelFilename';
+    if (kIsWeb) return webModelId;
+    final path = await getModelFilePath(modelFilename);
+    return path ?? webModelId;
   }
 
+  // Mobile only: Check if model file exists
   Future<void> _checkModelExists() async {
+    if (kIsWeb) return;
     final modelPath = await _getModelPath();
-    final file = File(modelPath);
+    final exists = await modelFileExists(modelPath);
 
-    if (await file.exists()) {
+    if (exists) {
       setState(() {
         _modelPath = modelPath;
         _statusMessage = 'Model ready. Initializing...';
@@ -86,7 +154,9 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     }
   }
 
+  // Mobile only: Download model
   Future<void> _downloadModel() async {
+    if (kIsWeb) return;
     setState(() {
       _isDownloading = true;
       _statusMessage = 'Downloading model...';
@@ -134,7 +204,9 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
       setState(() {
         _isModelReady = true;
         _isDownloading = false;
-        _statusMessage = 'Model ready!';
+        _statusMessage = kIsWeb
+            ? 'Web model ready! (Note: Web is slower ~2 tokens/sec)'
+            : 'Model ready!';
       });
     } catch (e) {
       setState(() {
@@ -159,7 +231,10 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
 
     setState(() {
       _isProcessing = true;
-      _outputController.text = 'Rewriting...';
+      _outputController.text = kIsWeb ? 'Loading model & rewriting...' : 'Rewriting...';
+      if (kIsWeb) {
+        _statusMessage = 'Initializing...';
+      }
     });
 
     try {
@@ -180,28 +255,25 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
         topP: 0.9,
       );
 
-      await fllamaChat(request, (response, responseJson, done) {
-        String cleanResponse = response
-            .replaceAll(RegExp(r'<\|eot_id\|>'), '')
-            .replaceAll(RegExp(r'<\|start_header_id\|>'), '')
-            .replaceAll(RegExp(r'<\|end_header_id\|>'), '')
-            .replaceAll(RegExp(r'\b(system|user|assistant)\b'), '')
-            .trim();
-
-        if (done) {
-          print('✅ Rewrite completed');
-          print('Final result: $cleanResponse');
-          setState(() {
-            _outputController.text = cleanResponse;
-            _isProcessing = false;
-          });
-        } else {
-          print('Streaming: $cleanResponse');
-          setState(() {
-            _outputController.text = cleanResponse;
-          });
-        }
-      });
+      await _runInference(
+        request: request,
+        onResponse: (response, done) {
+          if (done) {
+            print('✅ Rewrite completed');
+            print('Final result: $response');
+            setState(() {
+              _outputController.text = response;
+              _isProcessing = false;
+              _statusMessage = kIsWeb ? 'Web model ready! (WebGPU accelerated)' : 'Model ready!';
+            });
+          } else {
+            print('Streaming: $response');
+            setState(() {
+              _outputController.text = response;
+            });
+          }
+        },
+      );
     } catch (e) {
       setState(() {
         _outputController.text = 'Error: $e';
@@ -224,7 +296,10 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
 
     setState(() {
       _isProcessing = true;
-      _outputController.text = 'Processing...';
+      _outputController.text = kIsWeb ? 'Loading model & processing...' : 'Processing...';
+      if (kIsWeb) {
+        _statusMessage = 'Initializing...';
+      }
     });
 
     try {
@@ -246,30 +321,25 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
         topP: 0.95,
       );
 
-      // Use fllamaChat for streaming response
-      await fllamaChat(request, (response, responseJson, done) {
-        // Clean Llama 3.2 chat template tokens from response
-        String cleanResponse = response
-            .replaceAll(RegExp(r'<\|eot_id\|>'), '')
-            .replaceAll(RegExp(r'<\|start_header_id\|>'), '')
-            .replaceAll(RegExp(r'<\|end_header_id\|>'), '')
-            .replaceAll(RegExp(r'\b(system|user|assistant)\b'), '')
-            .trim();
-
-        if (done) {
-          print('✅ Grammar correction completed');
-          print('Final result: $cleanResponse');
-          setState(() {
-            _outputController.text = cleanResponse;
-            _isProcessing = false;
-          });
-        } else {
-          print('Streaming: $cleanResponse');
-          setState(() {
-            _outputController.text = cleanResponse;
-          });
-        }
-      });
+      await _runInference(
+        request: request,
+        onResponse: (response, done) {
+          if (done) {
+            print('✅ Grammar correction completed');
+            print('Final result: $response');
+            setState(() {
+              _outputController.text = response;
+              _isProcessing = false;
+              _statusMessage = kIsWeb ? 'Web model ready! (WebGPU accelerated)' : 'Model ready!';
+            });
+          } else {
+            print('Streaming: $response');
+            setState(() {
+              _outputController.text = response;
+            });
+          }
+        },
+      );
     } catch (e) {
       setState(() {
         _outputController.text = 'Error: $e';
@@ -309,11 +379,17 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
                         style: const TextStyle(fontSize: 14),
                         textAlign: TextAlign.center,
                       ),
-                      if (_isDownloading) ...[
+                      // Show progress bar for downloading or loading
+                      if (_isDownloading || _isModelLoading || _isProcessing) ...[
                         const SizedBox(height: 8),
-                        LinearProgressIndicator(value: _downloadProgress),
+                        LinearProgressIndicator(
+                          value: _isDownloading
+                              ? _downloadProgress
+                              : (_isModelLoading ? _loadingProgress : null),
+                        ),
                       ],
-                      if (!_isModelReady && !_isDownloading) ...[
+                      // Only show download button on mobile
+                      if (!kIsWeb && !_isModelReady && !_isDownloading) ...[
                         const SizedBox(height: 8),
                         ElevatedButton(
                           onPressed: _downloadModel,

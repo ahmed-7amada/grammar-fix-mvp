@@ -33,6 +33,10 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <!-- FLLAMA WASM initialization for web LLM support -->
+  <script type="module">
+    import './fllama_wasm_init.js';
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
