@@ -22,8 +22,21 @@ let activeRequests = new Map();
 let requestQueue = [];
 let isProcessing = false;
 
+// Helper function to check if message is from browser extension
+function isExtensionMessage(data) {
+    if (!data) return true;
+    if (data.source && data.source.includes('devtools')) return true;
+    if (data.type && typeof data.type === 'string' && data.type.includes(':content:')) return true;
+    if (data.hello !== undefined && data.source) return true;
+    if (!data.event) return true; // Ignore messages without our expected 'event' property
+    return false;
+}
+
 // Main message event listener
 self.addEventListener('message', (e) => {
+    // Silently ignore browser extension messages
+    if (isExtensionMessage(e.data)) return;
+
     const { event, request } = e.data;
     if (event === action.MLC_INFERENCE) {
         console.log("[fllama_mlc_worker] Received MLC_INFERENCE request", request);

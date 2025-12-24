@@ -47,6 +47,17 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
   double _loadingProgress = 0.0;  // Track loading progress (0.0 to 1.0)
   String _statusMessage = 'Model not downloaded';
 
+  // Tone adjustment options
+  String _selectedTone = 'Formal';
+  final List<String> _toneOptions = [
+    'Formal',
+    'Friendly',
+    'Professional',
+    'Casual',
+    'Confident',
+    'Empathetic',
+  ];
+
   String? _modelPath;
 
   // Mobile: Download GGUF model
@@ -282,6 +293,83 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     }
   }
 
+  Future<void> _adjustTone() async {
+    if (!_isModelReady) {
+      _showError('Model is not ready yet');
+      return;
+    }
+
+    final inputText = _inputController.text.trim();
+    if (inputText.isEmpty) {
+      _showError('Please enter some text');
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _outputController.text = kIsWeb ? 'Loading model & adjusting tone...' : 'Adjusting tone...';
+      if (kIsWeb) {
+        _statusMessage = 'Initializing...';
+      }
+    });
+
+    // Define tone descriptions for better prompts
+    final toneDescriptions = {
+      'Formal': 'formal, professional, and suitable for business or academic contexts',
+      'Friendly': 'warm, approachable, and conversational while remaining respectful',
+      'Professional': 'polished, competent, and business-appropriate',
+      'Casual': 'relaxed, informal, and easy-going like talking to a friend',
+      'Confident': 'assertive, self-assured, and decisive',
+      'Empathetic': 'understanding, compassionate, and emotionally supportive',
+    };
+
+    final toneDesc = toneDescriptions[_selectedTone] ?? _selectedTone.toLowerCase();
+
+    try {
+      final request = OpenAiRequest(
+        maxTokens: 512,
+        messages: [
+          Message(
+            Role.system,
+            'You are a tone adjustment assistant. Your task is to rewrite the text to have a $_selectedTone tone. Make it sound $toneDesc. Preserve the original meaning but adjust the word choice, sentence structure, and style to match the desired tone. Return ONLY the adjusted text without any explanations.',
+          ),
+          Message(
+            Role.user,
+            'Rewrite this text in a $_selectedTone tone: $inputText',
+          ),
+        ],
+        modelPath: _modelPath!,
+        temperature: 0.6,
+        topP: 0.9,
+      );
+
+      await _runInference(
+        request: request,
+        onResponse: (response, done) {
+          if (done) {
+            print('✅ Tone adjustment completed');
+            print('Final result: $response');
+            setState(() {
+              _outputController.text = response;
+              _isProcessing = false;
+              _statusMessage = kIsWeb ? 'Web model ready! (WebGPU accelerated)' : 'Model ready!';
+            });
+          } else {
+            print('Streaming: $response');
+            setState(() {
+              _outputController.text = response;
+            });
+          }
+        },
+      );
+    } catch (e) {
+      setState(() {
+        _outputController.text = 'Error: $e';
+        _isProcessing = false;
+      });
+    }
+  }
+
   Future<void> _fixGrammar() async {
     if (!_isModelReady) {
       _showError('Model is not ready yet');
@@ -442,6 +530,57 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
                       ),
                       child: Text(
                         _isProcessing ? 'Processing...' : 'Rewrite',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Tone Adjustment Row
+              Row(
+                children: [
+                  // Tone Dropdown
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.teal, width: 2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedTone,
+                        icon: const Icon(Icons.arrow_drop_down, color: Colors.teal),
+                        style: const TextStyle(color: Colors.teal, fontSize: 16),
+                        onChanged: _isProcessing ? null : (String? newValue) {
+                          if (newValue != null) {
+                            setState(() {
+                              _selectedTone = newValue;
+                            });
+                          }
+                        },
+                        items: _toneOptions.map<DropdownMenuItem<String>>((String value) {
+                          return DropdownMenuItem<String>(
+                            value: value,
+                            child: Text(value),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Adjust Tone Button
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _isModelReady && !_isProcessing ? _adjustTone : null,
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.all(16),
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: Text(
+                        _isProcessing ? 'Processing...' : 'Adjust Tone',
                         style: const TextStyle(fontSize: 16),
                       ),
                     ),
