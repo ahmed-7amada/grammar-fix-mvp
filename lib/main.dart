@@ -58,6 +58,12 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     'Empathetic',
   ];
 
+  // Text statistics
+  int _wordCount = 0;
+  int _charCount = 0;
+  int _paragraphCount = 0;
+  int _sentenceCount = 0;
+
   String? _modelPath;
 
   // Mobile: Download GGUF model
@@ -71,11 +77,42 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
   @override
   void initState() {
     super.initState();
+    // Add listener for real-time text statistics
+    _inputController.addListener(_updateTextStats);
     if (kIsWeb) {
       _initializeWebModel();
     } else {
       _checkModelExists();
     }
+  }
+
+  void _updateTextStats() {
+    final text = _inputController.text;
+    setState(() {
+      // Character count (including spaces)
+      _charCount = text.length;
+
+      // Word count
+      _wordCount = text.trim().isEmpty
+          ? 0
+          : text.trim().split(RegExp(r'\s+')).length;
+
+      // Sentence count (split by . ! ?)
+      _sentenceCount = text.trim().isEmpty
+          ? 0
+          : RegExp(r'[.!?]+').allMatches(text).length;
+      if (_sentenceCount == 0 && text.trim().isNotEmpty) {
+        _sentenceCount = 1; // Count as 1 sentence if no punctuation
+      }
+
+      // Paragraph count (split by double newlines or single newlines)
+      _paragraphCount = text.trim().isEmpty
+          ? 0
+          : text.trim().split(RegExp(r'\n\s*\n|\n')).where((p) => p.trim().isNotEmpty).length;
+      if (_paragraphCount == 0 && text.trim().isNotEmpty) {
+        _paragraphCount = 1;
+      }
+    });
   }
 
   void _initializeWebModel() {
@@ -134,6 +171,7 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
 
   @override
   void dispose() {
+    _inputController.removeListener(_updateTextStats);
     _inputController.dispose();
     _outputController.dispose();
     super.dispose();
@@ -370,6 +408,78 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     }
   }
 
+  Future<void> _analyzeReaderReactions() async {
+    if (!_isModelReady) {
+      _showError('Model is not ready yet');
+      return;
+    }
+
+    final inputText = _inputController.text.trim();
+    if (inputText.isEmpty) {
+      _showError('Please enter some text');
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _outputController.text = kIsWeb ? 'Loading model & analyzing...' : 'Analyzing...';
+      if (kIsWeb) {
+        _statusMessage = 'Initializing...';
+      }
+    });
+
+    try {
+      final request = OpenAiRequest(
+        maxTokens: 512,
+        messages: [
+          Message(
+            Role.system,
+            '''You are a writing analyst that predicts reader reactions. Analyze the text and provide:
+
+1. TONE DETECTED: List 2-3 tones (e.g., Formal, Friendly, Urgent, Cold, Warm)
+2. READER MAY FEEL: How readers might emotionally react (e.g., Informed, Confused, Motivated, Defensive)
+3. STRENGTHS: What works well in the writing (1-2 points)
+4. SUGGESTIONS: How to improve impact (1-2 specific tips)
+
+Keep your response concise and use bullet points.''',
+          ),
+          Message(
+            Role.user,
+            'Analyze reader reactions for this text:\n\n$inputText',
+          ),
+        ],
+        modelPath: _modelPath!,
+        temperature: 0.5,
+        topP: 0.9,
+      );
+
+      await _runInference(
+        request: request,
+        onResponse: (response, done) {
+          if (done) {
+            print('✅ Reader reactions analysis completed');
+            print('Final result: $response');
+            setState(() {
+              _outputController.text = response;
+              _isProcessing = false;
+              _statusMessage = kIsWeb ? 'Web model ready! (WebGPU accelerated)' : 'Model ready!';
+            });
+          } else {
+            print('Streaming: $response');
+            setState(() {
+              _outputController.text = response;
+            });
+          }
+        },
+      );
+    } catch (e) {
+      setState(() {
+        _outputController.text = 'Error: $e';
+        _isProcessing = false;
+      });
+    }
+  }
+
   Future<void> _fixGrammar() async {
     if (!_isModelReady) {
       _showError('Model is not ready yet');
@@ -442,6 +552,31 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
     );
   }
 
+  Widget _buildStatItem(String label, int count, IconData icon) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 20, color: Colors.grey[600]),
+        const SizedBox(height: 4),
+        Text(
+          count.toString(),
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: Colors.black87,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.grey[600],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -501,6 +636,24 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
                   hintText: 'Enter text to fix grammar...\ne.g., "I goes to school yesterday"',
                 ),
                 enabled: _isModelReady,
+              ),
+              const SizedBox(height: 8),
+
+              // Text Statistics Card
+              Card(
+                color: Colors.grey[100],
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildStatItem('Words', _wordCount, Icons.text_fields),
+                      _buildStatItem('Characters', _charCount, Icons.abc),
+                      _buildStatItem('Sentences', _sentenceCount, Icons.short_text),
+                      _buildStatItem('Paragraphs', _paragraphCount, Icons.subject),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 16),
 
@@ -586,6 +739,25 @@ class _GrammarFixScreenState extends State<GrammarFixScreen> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 12),
+
+              // Reader Reactions Button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _isModelReady && !_isProcessing ? _analyzeReaderReactions : null,
+                  icon: const Icon(Icons.psychology),
+                  label: Text(
+                    _isProcessing ? 'Processing...' : 'Reader Reactions',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.all(16),
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
               ),
               const SizedBox(height: 16),
 
